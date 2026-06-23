@@ -3,11 +3,13 @@ package main
 import (
 	"go-backend/config"
 	"go-backend/handlers"
+
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
 	config.InitDB()
+	config.InitRedis() 
 
 	router := gin.Default()
 	router.POST("/recipes", handlers.NewRecipeHandler)
@@ -15,5 +17,6 @@ func main() {
 	router.GET("/recipes/search", handlers.SearchRecipesHandler)
 	router.PUT("/recipes/:id", handlers.UpdateRecipeHandler)
 	router.DELETE("/recipes/:id", handlers.DeleteRecipeHandler)
-	router.Run()
+	
+	router.Run(":8080")
 }
