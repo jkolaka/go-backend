@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"go-backend/config"
 	"go-backend/models"
@@ -12,6 +13,13 @@ import (
 	"github.com/rs/xid"
 	"gorm.io/gorm"
 )
+
+// Helper function to invalidate cache when data updates
+func clearCache() {
+	if config.RedisClient != nil {
+		config.RedisClient.Del(config.Ctx, "recipes")
+	}
+}
 
 func NewRecipeHandler(c *gin.Context) {
 	var recipe models.Recipe
@@ -28,14 +36,35 @@ func NewRecipeHandler(c *gin.Context) {
 		return
 	}
 
+	clearCache() 
 	c.JSON(http.StatusOK, recipe)
 }
 
 func ListRecipesHandler(c *gin.Context) {
+	//Attempt to fetch data from Redis Cache
+	if config.RedisClient != nil {
+		val, err := config.RedisClient.Get(config.Ctx, "recipes").Result()
+		if err == nil {
+			var recipes []models.Recipe
+			if err := json.Unmarshal([]byte(val), &recipes); err == nil {
+				c.JSON(http.StatusOK, recipes)
+				return
+			}
+		}
+	}
+
+	// Fetch from SQLite Database when cache is not found
 	var recipes []models.Recipe
 	if err := config.DB.Find(&recipes).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch recipes"})
 		return
+	}
+
+	// Saves to Redis with a 10-minute expiration
+	if config.RedisClient != nil {
+		if data, err := json.Marshal(recipes); err == nil {
+			config.RedisClient.Set(config.Ctx, "recipes", string(data), 10*time.Minute)
+		}
 	}
 
 	c.JSON(http.StatusOK, recipes)
@@ -68,6 +97,7 @@ func UpdateRecipeHandler(c *gin.Context) {
 		return
 	}
 
+	clearCache() 
 	c.JSON(http.StatusOK, updateData)
 }
 
@@ -85,6 +115,7 @@ func DeleteRecipeHandler(c *gin.Context) {
 		return
 	}
 
+	clearCache() 
 	c.JSON(http.StatusOK, gin.H{"message": "Recipe has been deleted"})
 }
 
