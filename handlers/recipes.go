@@ -14,7 +14,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// Helper function to invalidate cache when data updates
 func clearCache() {
 	if config.RedisClient != nil {
 		config.RedisClient.Del(config.Ctx, "recipes")
@@ -28,20 +27,28 @@ func NewRecipeHandler(c *gin.Context) {
 		return
 	}
 
+	// Get user ID from context (set by auth middleware)
+	userID, exists := c.Get("userId")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
 	recipe.ID = xid.New().String()
 	recipe.PublishedAt = time.Now()
+	recipe.UserID = userID.(string)
 
 	if err := config.DB.Create(&recipe).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create recipe"})
 		return
 	}
 
-	clearCache() 
-	c.JSON(http.StatusOK, recipe)
+	clearCache()
+	c.JSON(http.StatusCreated, recipe)
 }
 
 func ListRecipesHandler(c *gin.Context) {
-	//Attempt to fetch data from Redis Cache
+	// Try Redis cache
 	if config.RedisClient != nil {
 		val, err := config.RedisClient.Get(config.Ctx, "recipes").Result()
 		if err == nil {
@@ -53,17 +60,17 @@ func ListRecipesHandler(c *gin.Context) {
 		}
 	}
 
-	// Fetch from SQLite Database when cache is not found
+	// Cache miss - get from database
 	var recipes []models.Recipe
-	if err := config.DB.Find(&recipes).Error; err != nil {
+	if err := config.DB.Preload("User").Find(&recipes).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch recipes"})
 		return
 	}
 
-	// Saves to Redis with a 10-minute expiration
+	// Store in cache
 	if config.RedisClient != nil {
 		if data, err := json.Marshal(recipes); err == nil {
-			config.RedisClient.Set(config.Ctx, "recipes", string(data), 10*time.Minute)
+			config.RedisClient.Set(config.Ctx, "recipes", data, 10*time.Minute)
 		}
 	}
 
@@ -72,8 +79,9 @@ func ListRecipesHandler(c *gin.Context) {
 
 func UpdateRecipeHandler(c *gin.Context) {
 	id := c.Param("id")
-	var existingRecipe models.Recipe
+	userID, _ := c.Get("userId")
 
+	var existingRecipe models.Recipe
 	if err := config.DB.First(&existingRecipe, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Recipe not found"})
@@ -83,40 +91,60 @@ func UpdateRecipeHandler(c *gin.Context) {
 		return
 	}
 
+	// Check ownership
+	if existingRecipe.UserID != userID.(string) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to update this recipe"})
+		return
+	}
+
 	var updateData models.Recipe
 	if err := c.ShouldBindJSON(&updateData); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	// Preserve ID, timestamps, and UserID
 	updateData.ID = existingRecipe.ID
 	updateData.PublishedAt = existingRecipe.PublishedAt
+	updateData.UserID = existingRecipe.UserID
 
 	if err := config.DB.Save(&updateData).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update recipe"})
 		return
 	}
 
-	clearCache() 
+	clearCache()
 	c.JSON(http.StatusOK, updateData)
 }
 
 func DeleteRecipeHandler(c *gin.Context) {
 	id := c.Param("id")
-	result := config.DB.Delete(&models.Recipe{}, "id = ?", id)
+	userID, _ := c.Get("userId")
 
+	var existingRecipe models.Recipe
+	if err := config.DB.First(&existingRecipe, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Recipe not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		}
+		return
+	}
+
+	// Check ownership
+	if existingRecipe.UserID != userID.(string) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to delete this recipe"})
+		return
+	}
+
+	result := config.DB.Delete(&models.Recipe{}, "id = ?", id)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete recipe"})
 		return
 	}
 
-	if result.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Recipe not found"})
-		return
-	}
-
-	clearCache() 
-	c.JSON(http.StatusOK, gin.H{"message": "Recipe has been deleted"})
+	clearCache()
+	c.JSON(http.StatusOK, gin.H{"message": "Recipe deleted successfully"})
 }
 
 func SearchRecipesHandler(c *gin.Context) {
