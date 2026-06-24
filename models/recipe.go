@@ -27,8 +27,12 @@ func (s *JSONSlice) Scan(value interface{}) error {
 type Recipe struct {
 	ID           string    `gorm:"primaryKey" json:"id"`
 	Name         string    `json:"name"`
+	Title        string    `json:"title"`
+	Description  string    `json:"description"`
 	Tags         JSONSlice `gorm:"type:text" json:"tags"`
 	Ingredients  JSONSlice `gorm:"type:text" json:"ingredients"`
 	Instructions JSONSlice `gorm:"type:text" json:"instructions"`
 	PublishedAt  time.Time `json:"publishedAt"`
+	UserID       string    `json:"userId" gorm:"index"`
+	User         User      `json:"user,omitempty" gorm:"foreignKey:UserID"`
 }
